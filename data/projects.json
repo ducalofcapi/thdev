@@ -1,0 +1,18 @@
+{
+  "projects": [
+    {
+      "id": 1,
+      "title": "Neon District",
+      "type": "Roblox Environment",
+      "image": "https://images.unsplash.com/photo-1519608487953-e999c86e7455",
+      "description": "Ambiente futurista desenvolvido para Roblox."
+    },
+    {
+      "id": 2,
+      "title": "Modern Residence",
+      "type": "3D Modeling",
+      "image": "https://images.unsplash.com/photo-1600607687920-4e2a09cf159d",
+      "description": "Projeto arquitetônico em 3D."
+    }
+  ]
+}
