@@ -1,4 +1,3 @@
-
 require("dotenv").config();
 
 const express = require("express");
@@ -9,45 +8,32 @@ const cors = require("cors");
 
 const app = express();
 
-// ================================
-// CONFIGURAÇÕES
-// ================================
-
 const PORT = process.env.PORT || 3000;
 const ADMIN_KEY = process.env.ADMIN_KEY;
 
-// Diretório persistente
-const DATA_DIR = process.env.DATA_DIR ||
-    path.join(__dirname, "data");
+// Usa DATA_DIR se configurado. Caso contrário, cria ./data
+const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, "data");
+const PROJECTS_FILE = path.join(DATA_DIR, "projects.json");
 
-const PROJECTS_FILE = path.join(
-    DATA_DIR,
-    "projects.json"
-);
+const sessions = new Set();
 
-// ================================
-// INICIALIZAÇÃO DO ARMAZENAMENTO
-// ================================
+/* ==============================
+   ARMAZENAMENTO
+============================== */
 
 function initializeStorage() {
     try {
-        // Cria o diretório caso não exista
-        if (!fs.existsSync(DATA_DIR)) {
-            fs.mkdirSync(DATA_DIR, {
-                recursive: true
-            });
+        // Cria a pasta automaticamente
+        fs.mkdirSync(DATA_DIR, { recursive: true });
 
-            console.log("[STORAGE] Diretório criado.");
-        }
+        console.log("[STORAGE] Diretório:", DATA_DIR);
 
-        // Cria o JSON somente se não existir
+        // Cria o arquivo apenas se ele ainda não existir
         if (!fs.existsSync(PROJECTS_FILE)) {
             fs.writeFileSync(
                 PROJECTS_FILE,
-                JSON.stringify({
-                    projects: []
-                }, null, 2),
-                "utf8"
+                JSON.stringify({ projects: [] }, null, 2),
+                { encoding: "utf8", flag: "wx" }
             );
 
             console.log("[STORAGE] projects.json criado.");
@@ -59,26 +45,71 @@ function initializeStorage() {
         );
 
         if (!data || !Array.isArray(data.projects)) {
-            throw new Error(
-                "Estrutura inválida em projects.json"
-            );
+            throw new Error("Estrutura inválida em projects.json");
         }
 
-        console.log("[STORAGE] Armazenamento carregado.");
-        console.log(`[STORAGE] Arquivo: ${PROJECTS_FILE}`);
-        console.log(`[STORAGE] Projetos: ${data.projects.length}`);
+        console.log("[STORAGE] Inicialização concluída.");
+        console.log("[STORAGE] Arquivo:", PROJECTS_FILE);
+        console.log("[STORAGE] Projetos encontrados:", data.projects.length);
 
     } catch (error) {
-        console.error("[STORAGE] Erro:", error);
+        console.error("[STORAGE] Erro ao inicializar:", error);
         throw error;
     }
 }
 
+function readProjects() {
+    try {
+        const data = JSON.parse(
+            fs.readFileSync(PROJECTS_FILE, "utf8")
+        );
+
+        if (!Array.isArray(data.projects)) {
+            throw new Error("Lista de projetos inválida.");
+        }
+
+        return data.projects;
+
+    } catch (error) {
+        console.error("[STORAGE] Erro ao ler projetos:", error);
+        throw error;
+    }
+}
+
+function saveProjects(projects) {
+    const tempFile = PROJECTS_FILE + ".tmp";
+
+    try {
+        const data = {
+            projects
+        };
+
+        fs.writeFileSync(
+            tempFile,
+            JSON.stringify(data, null, 2),
+            "utf8"
+        );
+
+        fs.renameSync(tempFile, PROJECTS_FILE);
+
+        console.log("[STORAGE] Projetos salvos:", projects.length);
+
+    } catch (error) {
+        if (fs.existsSync(tempFile)) {
+            fs.unlinkSync(tempFile);
+        }
+
+        console.error("[STORAGE] Erro ao salvar:", error);
+        throw error;
+    }
+}
+
+// Inicializa o armazenamento antes de iniciar o servidor
 initializeStorage();
 
-// ================================
-// MIDDLEWARE
-// ================================
+/* ==============================
+   MIDDLEWARE
+============================== */
 
 app.use(cors({
     origin: true,
@@ -88,339 +119,235 @@ app.use(cors({
 
 app.use(express.json());
 
-app.use(
-    express.static(
-        path.join(__dirname, "public")
-    )
-);
+app.use(express.static(path.join(__dirname, "public")));
 
-// ================================
-// SESSÕES
-// ================================
+/* ==============================
+   AUTENTICAÇÃO
+============================== */
 
-const sessions = new Set();
-
-// ================================
-// FUNÇÕES DE ARMAZENAMENTO
-// ================================
-
-function readProjects() {
-    const data = fs.readFileSync(
-        PROJECTS_FILE,
-        "utf8"
-    );
-
-    const parsed = JSON.parse(data);
-
-    if (!parsed || !Array.isArray(parsed.projects)) {
-        throw new Error("Formato inválido de projects.json");
-    }
-
-    return parsed;
-}
-
-function saveProjects(data) {
-    const temporaryFile = PROJECTS_FILE + ".tmp";
-
-    fs.writeFileSync(
-        temporaryFile,
-        JSON.stringify(data, null, 2),
-        "utf8"
-    );
-
-    // Substituição atômica do arquivo
-    fs.renameSync(
-        temporaryFile,
-        PROJECTS_FILE
-    );
-}
-
-// ================================
-// AUTENTICAÇÃO
-// ================================
-
-function authenticated(req, res, next) {
+function auth(req, res, next) {
     const authorization = req.headers.authorization;
 
-    const token = authorization
-        ?.replace(/^Bearer\s+/i, "");
-
-    if (!token || !sessions.has(token)) {
+    if (!authorization || !authorization.startsWith("Bearer ")) {
         return res.status(401).json({
-            error: "Não autorizado"
+            error: "Não autorizado."
+        });
+    }
+
+    const token = authorization.slice(7);
+
+    if (!sessions.has(token)) {
+        return res.status(401).json({
+            error: "Sessão inválida ou expirada."
         });
     }
 
     next();
 }
 
-// ================================
-// ROTA PRINCIPAL
-// ================================
+/* ==============================
+   ROTAS PRINCIPAIS
+============================== */
 
 app.get("/", (req, res) => {
     res.json({
-        success: true,
-        message: "ThDev Portfolio API online"
+        status: "online",
+        name: "ThDev Portfolio API"
     });
 });
 
-// ================================
-// LOGIN
-// ================================
+/* ==============================
+   LOGIN
+============================== */
 
 app.post("/api/login", (req, res) => {
+    const { password } = req.body;
+
+    if (!ADMIN_KEY) {
+        console.error("[AUTH] ADMIN_KEY não configurada.");
+
+        return res.status(500).json({
+            error: "Configuração do servidor incompleta."
+        });
+    }
+
+    if (!password || password !== ADMIN_KEY) {
+        return res.status(401).json({
+            error: "Senha incorreta."
+        });
+    }
+
+    const token = crypto.randomBytes(32).toString("hex");
+
+    sessions.add(token);
+
+    console.log("[LOGIN] Nova sessão criada.");
+
+    res.json({
+        success: true,
+        token
+    });
+});
+
+/* ==============================
+   VERIFICAR SESSÃO
+============================== */
+
+app.get("/api/auth", auth, (req, res) => {
+    res.json({
+        authenticated: true
+    });
+});
+
+/* ==============================
+   LOGOUT
+============================== */
+
+app.post("/api/logout", auth, (req, res) => {
+    const token = req.headers.authorization.slice(7);
+
+    sessions.delete(token);
+
+    console.log("[LOGOUT] Sessão encerrada.");
+
+    res.json({
+        success: true
+    });
+});
+
+/* ==============================
+   LISTAR PROJETOS
+============================== */
+
+app.get("/api/projects", (req, res) => {
     try {
-        const { password } = req.body;
+        const projects = readProjects();
 
-        if (!password) {
-            return res.status(400).json({
-                error: "Senha não informada"
-            });
-        }
-
-        if (!ADMIN_KEY) {
-            console.error(
-                "[LOGIN] ADMIN_KEY não configurada."
-            );
-
-            return res.status(500).json({
-                error: "ADMIN_KEY não configurada"
-            });
-        }
-
-        if (password !== ADMIN_KEY) {
-            return res.status(401).json({
-                error: "Senha incorreta"
-            });
-        }
-
-        const token = crypto
-            .randomBytes(32)
-            .toString("hex");
-
-        sessions.add(token);
-
-        console.log("[LOGIN] Nova sessão criada.");
+        res.setHeader("Cache-Control", "no-store");
 
         res.json({
-            success: true,
-            token
+            projects
         });
 
     } catch (error) {
-        console.error("[LOGIN]", error);
-
         res.status(500).json({
-            error: "Erro interno no login"
+            error: "Não foi possível carregar os projetos."
         });
     }
 });
 
-// ================================
-// VALIDAR SESSÃO
-// ================================
+/* ==============================
+   ADICIONAR PROJETO
+============================== */
 
-app.get(
-    "/api/auth",
-    authenticated,
-    (req, res) => {
-        res.json({
+app.post("/api/projects", auth, (req, res) => {
+    try {
+        const { title, type, image, description } = req.body;
+
+        if (
+            typeof title !== "string" ||
+            !title.trim() ||
+            typeof image !== "string" ||
+            !image.trim()
+        ) {
+            return res.status(400).json({
+                error: "Título e imagem são obrigatórios."
+            });
+        }
+
+        const projects = readProjects();
+
+        const project = {
+            id: Date.now(),
+            title: title.trim(),
+            type: typeof type === "string" ? type.trim() : "",
+            image: image.trim(),
+            description: typeof description === "string"
+                ? description.trim()
+                : ""
+        };
+
+        projects.unshift(project);
+
+        saveProjects(projects);
+
+        console.log("[PROJECT] Adicionado:", project.title);
+
+        res.status(201).json({
             success: true,
-            authenticated: true
+            project
+        });
+
+    } catch (error) {
+        console.error("[PROJECT] Erro ao adicionar:", error);
+
+        res.status(500).json({
+            error: "Não foi possível adicionar o projeto."
         });
     }
-);
+});
 
-// ================================
-// LOGOUT
-// ================================
+/* ==============================
+   EXCLUIR PROJETO
+============================== */
 
-app.post(
-    "/api/logout",
-    authenticated,
-    (req, res) => {
-        const authorization = req.headers.authorization;
+app.delete("/api/projects/:id", auth, (req, res) => {
+    try {
+        const id = Number(req.params.id);
 
-        const token = authorization
-            ?.replace(/^Bearer\s+/i, "");
-
-        if (token) {
-            sessions.delete(token);
+        if (!Number.isFinite(id)) {
+            return res.status(400).json({
+                error: "ID inválido."
+            });
         }
+
+        const projects = readProjects();
+
+        const updatedProjects = projects.filter(
+            project => project.id !== id
+        );
+
+        if (updatedProjects.length === projects.length) {
+            return res.status(404).json({
+                error: "Projeto não encontrado."
+            });
+        }
+
+        saveProjects(updatedProjects);
+
+        console.log("[PROJECT] Excluído:", id);
 
         res.json({
             success: true
         });
-    }
-);
-
-// ================================
-// BUSCAR PROJETOS
-// ================================
-
-app.get("/api/projects", (req, res) => {
-    try {
-        const data = readProjects();
-
-        res.json(data);
 
     } catch (error) {
-        console.error("[PROJECTS GET]", error);
+        console.error("[PROJECT] Erro ao excluir:", error);
 
         res.status(500).json({
-            error: "Erro ao ler projetos"
+            error: "Não foi possível excluir o projeto."
         });
     }
 });
 
-// ================================
-// ADICIONAR PROJETO
-// ================================
-
-app.post(
-    "/api/projects",
-    authenticated,
-    (req, res) => {
-        try {
-            const data = readProjects();
-
-            const {
-                title,
-                type,
-                image,
-                description
-            } = req.body;
-
-            // VALIDAÇÃO
-            if (
-                typeof title !== "string" ||
-                typeof image !== "string" ||
-                !title.trim() ||
-                !image.trim()
-            ) {
-                return res.status(400).json({
-                    error: "Título e imagem são obrigatórios"
-                });
-            }
-
-            // NOVO PROJETO
-            const project = {
-                id: Date.now(),
-
-                title: title.trim(),
-
-                type: type
-                    ? String(type).trim()
-                    : "Projeto",
-
-                image: image.trim(),
-
-                description: description
-                    ? String(description).trim()
-                    : ""
-            };
-
-            // ADICIONAR NO INÍCIO
-            data.projects.unshift(project);
-
-            // SALVAR NO DISCO PERSISTENTE
-            saveProjects(data);
-
-            console.log(
-                `[PROJECT] Adicionado: ${project.title}`
-            );
-
-            res.json({
-                success: true,
-                project
-            });
-
-        } catch (error) {
-            console.error("[PROJECTS POST]", error);
-
-            res.status(500).json({
-                error: "Erro ao salvar projeto"
-            });
-        }
-    }
-);
-
-// ================================
-// EXCLUIR PROJETO
-// ================================
-
-app.delete(
-    "/api/projects/:id",
-    authenticated,
-    (req, res) => {
-        try {
-            const data = readProjects();
-
-            const id = String(req.params.id);
-
-            const oldLength = data.projects.length;
-
-            data.projects = data.projects.filter(
-                project => String(project.id) !== id
-            );
-
-            // PROJETO NÃO ENCONTRADO
-            if (data.projects.length === oldLength) {
-                return res.status(404).json({
-                    error: "Projeto não encontrado"
-                });
-            }
-
-            // SALVAR ALTERAÇÕES
-            saveProjects(data);
-
-            console.log(
-                `[PROJECT] Excluído: ${id}`
-            );
-
-            res.json({
-                success: true
-            });
-
-        } catch (error) {
-            console.error("[PROJECTS DELETE]", error);
-
-            res.status(500).json({
-                error: "Erro ao excluir projeto"
-            });
-        }
-    }
-);
-
-// ================================
-// 404 API
-// ================================
+/* ==============================
+   ROTA NÃO ENCONTRADA
+============================== */
 
 app.use("/api", (req, res) => {
     res.status(404).json({
-        error: "Endpoint não encontrado"
+        error: "Rota não encontrada."
     });
 });
 
-// ================================
-// INICIAR SERVIDOR
-// ================================
+/* ==============================
+   INICIAR SERVIDOR
+============================== */
 
-app.listen(
-    PORT,
-    "0.0.0.0",
-    () => {
-        console.log(
-            `ThDev Portfolio rodando na porta ${PORT}`
-        );
-
-        console.log(
-            `API: http://localhost:${PORT}`
-        );
-
-        console.log(
-            `[STORAGE] Diretório: ${DATA_DIR}`
-        );
-    }
-);
+app.listen(PORT, "0.0.0.0", () => {
+    console.log("--------------------------------");
+    console.log("ThDev Portfolio rodando na porta", PORT);
+    console.log("API: http://localhost:" + PORT);
+    console.log("Storage:", DATA_DIR);
+    console.log("--------------------------------");
+});
